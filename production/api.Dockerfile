@@ -13,17 +13,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends gcc && \
     rm -rf /var/lib/apt/lists/*
 
 # Install Python deps first (cache layer)
-COPY requirements.txt .
+COPY production/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy production source
-COPY . /app/production/
+COPY production/ /app/production/
 
 # Copy the existing graph source so graph/__init__.py can import it
-COPY ../src /app/src/
+COPY src/ /app/src/
 
 # Ensure both directories are on PYTHONPATH
 ENV PYTHONPATH="/app/production:/app/src"
+WORKDIR /app/production
 
 EXPOSE 8000
 
