@@ -1,0 +1,69 @@
+# docker-compose.yml
+# ─────────────────────────────────────────────────────────────────────────────
+# Run from my_agent/production/:
+#   docker-compose up --build
+#
+# Scale workers:
+#   docker-compose up --scale worker=4
+#
+# Use cloud Redis instead of local:
+#   Set REDIS_URL in .env to your RedisLabs connection string,
+#   then remove (or comment out) the `redis` service below.
+# ─────────────────────────────────────────────────────────────────────────────
+
+version: "3.9"
+
+services:
+
+  # ── Local Redis (dev / offline) ────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes   # RDB + AOF persistence
+
+  # ── FastAPI Gateway ────────────────────────────────────────────────────────
+  api:
+    build:
+      context: ..                # my_agent/ root (so ../src is accessible)
+      dockerfile: production/api.Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "8000:8000"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ── Worker ─────────────────────────────────────────────────────────────────
+  worker:
+    build:
+      context: ..
+      dockerfile: production/worker.Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      redis:
+        condition: service_healthy
+    # Stateless — scale horizontally with --scale worker=N
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          memory: 2G
+
+volumes:
+  redis_data:

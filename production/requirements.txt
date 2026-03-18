@@ -1,0 +1,29 @@
+# ── Production requirements ──────────────────────────────────────────────────
+# Install with: pip install -r requirements.txt
+# (The existing pyproject.toml covers the graph/LangChain deps.)
+
+# Web framework
+fastapi>=0.111.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9        # for form data support
+
+# Redis (async)
+redis[hiredis]>=5.0.0
+
+# Settings
+pydantic-settings>=2.0.0
+
+# LangGraph / LangChain (align with pyproject.toml versions)
+langchain>=0.3
+langchain-core>=0.3
+langchain-nvidia-ai-endpoints>=0.3
+langchain-openai>=0.2
+langchain-google-genai>=2.0
+langchain-qdrant>=0.2
+langchain-huggingface>=0.1
+langgraph>=0.2
+qdrant-client>=1.9
+python-dotenv>=1.0
+
+# (optional) tokenstream for streamed LLM responses
+# httpx-sse>=0.4.0
