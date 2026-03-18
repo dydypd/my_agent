@@ -84,11 +84,16 @@ async def _sse_generator(
     logger.debug("SSE subscribed to %s", channel)
 
     try:
-        heartbeat_task = asyncio.create_task(_heartbeat_loop())  # type: ignore[arg-type]
-        last_heartbeat = asyncio.get_event_loop().time()
+        # Poll pubsub with timeout so we can emit heartbeat comments even when
+        # no job events are published for a while (prevents Heroku H15 idle timeout).
+        while True:
+            raw = await pubsub.get_message(
+                ignore_subscribe_messages=True,
+                timeout=_HEARTBEAT_INTERVAL,
+            )
 
-        async for raw in pubsub.listen():
-            if raw["type"] != "message":
+            if raw is None:
+                yield ": heartbeat\n\n"
                 continue
 
             try:
@@ -103,26 +108,13 @@ async def _sse_generator(
 
             yield _fmt(event_name, payload)
 
-            # Send heartbeat comments to keep connection alive
-            now = asyncio.get_event_loop().time()
-            if now - last_heartbeat > _HEARTBEAT_INTERVAL:
-                yield ": heartbeat\n\n"
-                last_heartbeat = now
-
             # Close stream once terminal event received
             if event_name in ("done", "error_event"):
                 break
     finally:
-        heartbeat_task.cancel()
         await pubsub.unsubscribe(channel)
         await pubsub.aclose()
         logger.debug("SSE unsubscribed from %s", channel)
-
-
-async def _heartbeat_loop() -> None:
-    """No-op — used only to trigger periodic checks in the generator."""
-    while True:
-        await asyncio.sleep(_HEARTBEAT_INTERVAL)
 
 
 router_stream = APIRouter(tags=["stream"])
