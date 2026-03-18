@@ -8,7 +8,20 @@ version = "0.1.0"
 description = "Enterprise-grade LangGraph Multi-Agent boilerplate"
 requires-python = ">=3.11"
 dependencies = [
+    # ── Web framework ─────────────────────
+    "fastapi>=0.111.0",
+    "uvicorn[standard]>=0.30.0",
+    "python-multipart>=0.0.9",
+
+    # ── Redis ─────────────────────────────
+    "redis[hiredis]>=5.0.0",
+
+    # ── Settings ──────────────────────────
+    "pydantic-settings>=2.0.0",
+
+    # ── LangChain / LangGraph ─────────────
     "langchain>=0.3",
+    "langchain-core>=0.3",
     "langchain-nvidia-ai-endpoints>=0.3",
     "langchain-openai>=0.2",
     "langchain-google-genai>=2.0",
@@ -16,7 +29,11 @@ dependencies = [
     "langchain-huggingface>=0.1",
     "langgraph>=0.2",
     "langgraph-cli[inmem]>=0.1.55",
+
+    # ── Vector DB ─────────────────────────
     "qdrant-client>=1.9",
+
+    # ── Utils ─────────────────────────────
     "python-dotenv>=1.0",
 ]
 
