@@ -41,38 +41,95 @@ async def _publish(redis: aioredis.Redis, channel: str, event: str, data: dict) 
     await redis.publish(channel, payload)
 
 
+def _content_to_text(content: Any) -> str:
+    """Best-effort conversion of model message content to plain text."""
+    if isinstance(content, str):
+        return content.strip()
+
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                text = item.strip()
+                if text:
+                    parts.append(text)
+                continue
+
+            if isinstance(item, dict) and item.get("type") == "text":
+                text = str(item.get("text", "")).strip()
+                if text:
+                    parts.append(text)
+
+        return "\n".join(parts).strip()
+
+    if content is None:
+        return ""
+
+    return str(content).strip()
+
+
+def _format_message(msg: Any) -> dict[str, str] | None:
+    """Format message into {role, content}, skipping tool-only records."""
+    if isinstance(msg, HumanMessage):
+        text = _content_to_text(msg.content)
+        return {"role": "user", "content": text} if text else None
+
+    if isinstance(msg, AIMessage):
+        text = _content_to_text(msg.content)
+        # Keep textual assistant turns, ignore tool-call-only empty records.
+        return {"role": "assistant", "content": text} if text else None
+
+    if isinstance(msg, dict):
+        msg_type = str(msg.get("type") or "").lower()
+        role = str(msg.get("role") or "").lower()
+
+        if msg_type in {"tool", "tool_message"} or role == "tool":
+            return None
+
+        if msg_type == "human" or role == "user":
+            text = _content_to_text(msg.get("content"))
+            return {"role": "user", "content": text} if text else None
+
+        if msg_type in {"ai", "assistant"} or role == "assistant":
+            text = _content_to_text(msg.get("content"))
+            return {"role": "assistant", "content": text} if text else None
+
+    return None
+
+
 def _extract_final_answer(result_state: dict[str, Any]) -> str:
     """
     Pull the final answer out of a completed AgentState.
 
     Priority:
         1. result_state["final_answer"] if set
-        2. Last AIMessage in result_state["messages"]
+        2. Last assistant message in result_state["messages"]
         3. Fallback string
     """
     if result_state.get("final_answer"):
         return str(result_state["final_answer"])
 
-    messages: list[BaseMessage] = result_state.get("messages") or []
+    messages: list[Any] = result_state.get("messages") or []
     for msg in reversed(messages):
-        if isinstance(msg, AIMessage) and msg.content:
-            return str(msg.content)
+        record = _format_message(msg)
+        if record and record["role"] == "assistant":
+            return record["content"]
 
     return "(no response)"
 
 
 def _extract_new_messages(prior_messages: list[BaseMessage], result_state: dict[str, Any]) -> list[dict[str, Any]]:
-    """Format the newly added messages, excluding agent tool calls and tool responses."""
-    result_messages: list[BaseMessage] = result_state.get("messages") or []
-    new_messages = result_messages[len(prior_messages):]
-    
-    formatted = []
+    """Format newly added messages, excluding tool entries."""
+    result_messages: list[Any] = result_state.get("messages") or []
+    offset = len(prior_messages)
+    new_messages = result_messages[offset:] if len(result_messages) >= offset else result_messages
+
+    formatted: list[dict[str, Any]] = []
     for msg in new_messages:
-        if isinstance(msg, HumanMessage):
-            formatted.append({"role": "user", "content": str(msg.content)})
-        elif isinstance(msg, AIMessage):
-            if msg.content:
-                formatted.append({"role": "assistant", "content": str(msg.content)})
+        record = _format_message(msg)
+        if record:
+            formatted.append(record)
+
     return formatted
 
 
@@ -110,10 +167,10 @@ async def execute_job(
     metadata: dict = job_payload.get("metadata") or {}
     channel = _sse_channel(job_id)
 
-    # ── Load current job result so we can update it ────────────────────────
+    # Load current job result so we can update it.
     job_result = await state_store.load_job_result(job_id)
     if job_result is None:
-        logger.error("Job %s not found in state store — skipping", job_id)
+        logger.error("Job %s not found in state store - skipping", job_id)
         return JobResult(
             job_id=job_id,
             session_id=session_id,
@@ -121,21 +178,21 @@ async def execute_job(
             error="Job not found in state store",
         )
 
-    # Mark running
+    # Mark running.
     job_result = job_result.mark_running()
     await state_store.save_job_result(job_result)
     await _publish(redis, channel, "status", {"status": "running"})
 
-    # ── Load prior session state ───────────────────────────────────────────
+    # Load prior session state.
     prior_state = await state_store.load_session_state(session_id) or {}
     prior_messages: list[BaseMessage] = list(prior_state.get("messages") or [])
 
-    # ── Build input state ─────────────────────────────────────────────────
+    # Build input state.
     input_state: dict[str, Any] = {
         **prior_state,
         "messages": [*prior_messages, HumanMessage(content=user_message)],
         "metadata": {**metadata},
-        # Reset per-run transient fields so they don't bleed across turns
+        # Reset per-run transient fields so they don't bleed across turns.
         "next": None,
         "current_agent": None,
         "error": None,
@@ -144,7 +201,7 @@ async def execute_job(
         "scratchpad": "",
     }
 
-    # ── Execute graph with retry ───────────────────────────────────────────
+    # Execute graph with retry.
     try:
         result_state, attempts = await run_with_retry(
             _invoke_graph,
@@ -162,15 +219,15 @@ async def execute_job(
         final_answer = _extract_final_answer(result_state)
         new_messages = _extract_new_messages(prior_messages, result_state)
 
-        # ── Persist updated session state ──────────────────────────────────
+        # Persist updated session state.
         await state_store.save_session_state(session_id, result_state)
 
-        # ── Update job result ──────────────────────────────────────────────
+        # Update job result.
         job_result = job_result.mark_done(final_answer, messages=new_messages)
         job_result = job_result.model_copy(update={"retry_count": attempts})
         await state_store.save_job_result(job_result)
 
-        # ── Publish done event for SSE / WS listeners ──────────────────────
+        # Publish done event for SSE / WS listeners.
         await _publish(
             redis,
             channel,
