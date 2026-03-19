@@ -133,10 +133,34 @@ def _extract_new_messages(prior_messages: list[BaseMessage], result_state: dict[
     return formatted
 
 
-async def _invoke_graph(state: dict[str, Any]) -> dict[str, Any]:
-    """Thin wrapper so run_with_retry can call it."""
+async def _invoke_graph(
+    state: dict[str, Any],
+    redis: aioredis.Redis | None = None,
+    channel: str | None = None,
+    prior_msg_count: int = 0
+) -> dict[str, Any]:
+    """Wrapper so run_with_retry can call it. Streams new messages as they arrive."""
     graph = get_graph()
-    return await graph.ainvoke(state)  # type: ignore[return-value]
+    
+    if not redis or not channel:
+        return await graph.ainvoke(state)
+
+    final_state = state
+    seen_count = prior_msg_count
+    
+    async for current_state in graph.astream(state, stream_mode="values"):
+        final_state = current_state
+        current_messages = current_state.get("messages") or []
+        
+        if len(current_messages) > seen_count:
+            new_msgs = current_messages[seen_count:]
+            for msg in new_msgs:
+                record = _format_message(msg)
+                if record and record["role"] == "assistant":
+                    await _publish(redis, channel, "new_message", record)
+            seen_count = len(current_messages)
+            
+    return final_state
 
 
 async def execute_job(
@@ -203,9 +227,14 @@ async def execute_job(
 
     # Execute graph with retry.
     try:
+        msgs = input_state.get("messages") or []
+        prior_msg_count = len(msgs) if isinstance(msgs, list) else 0
         result_state, attempts = await run_with_retry(
             _invoke_graph,
             input_state,
+            redis=redis,
+            channel=channel,
+            prior_msg_count=prior_msg_count,
             attempt_callback=lambda i, exc: asyncio.ensure_future(
                 _publish(
                     redis,
