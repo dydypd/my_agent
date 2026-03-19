@@ -61,6 +61,21 @@ def _extract_final_answer(result_state: dict[str, Any]) -> str:
     return "(no response)"
 
 
+def _extract_new_messages(prior_messages: list[BaseMessage], result_state: dict[str, Any]) -> list[dict[str, Any]]:
+    """Format the newly added messages, excluding agent tool calls and tool responses."""
+    result_messages: list[BaseMessage] = result_state.get("messages") or []
+    new_messages = result_messages[len(prior_messages):]
+    
+    formatted = []
+    for msg in new_messages:
+        if isinstance(msg, HumanMessage):
+            formatted.append({"role": "user", "content": str(msg.content)})
+        elif isinstance(msg, AIMessage):
+            if msg.content:
+                formatted.append({"role": "assistant", "content": str(msg.content)})
+    return formatted
+
+
 async def _invoke_graph(state: dict[str, Any]) -> dict[str, Any]:
     """Thin wrapper so run_with_retry can call it."""
     graph = get_graph()
@@ -145,12 +160,13 @@ async def execute_job(
         )
 
         final_answer = _extract_final_answer(result_state)
+        new_messages = _extract_new_messages(prior_messages, result_state)
 
         # ── Persist updated session state ──────────────────────────────────
         await state_store.save_session_state(session_id, result_state)
 
         # ── Update job result ──────────────────────────────────────────────
-        job_result = job_result.mark_done(final_answer)
+        job_result = job_result.mark_done(final_answer, messages=new_messages)
         job_result = job_result.model_copy(update={"retry_count": attempts})
         await state_store.save_job_result(job_result)
 
@@ -159,7 +175,7 @@ async def execute_job(
             redis,
             channel,
             "done",
-            {"final_answer": final_answer, "status": "done"},
+            {"final_answer": final_answer, "status": "done", "messages": new_messages},
         )
         logger.info("Job %s completed (attempts=%d)", job_id, attempts + 1)
 

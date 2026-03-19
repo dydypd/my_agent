@@ -70,7 +70,11 @@ async def _sse_generator(
         return
 
     if result.status == "done":
-        yield _fmt("done", {"final_answer": result.final_answer, "status": "done"})
+        yield _fmt("done", {
+            "final_answer": result.final_answer,
+            "status": "done",
+            "messages": getattr(result, "messages", [])
+        })
         return
 
     if result.status == "failed":

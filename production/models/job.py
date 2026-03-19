@@ -42,6 +42,7 @@ class JobResult(BaseModel):
     status: Literal["queued", "running", "done", "failed"] = "queued"
 
     final_answer: str | None = None
+    messages: list[dict[str, Any]] = Field(default_factory=list)
     error: str | None = None
     retry_count: int = 0
 
@@ -55,14 +56,15 @@ class JobResult(BaseModel):
     def mark_running(self) -> "JobResult":
         return self.model_copy(update={"status": "running"})
 
-    def mark_done(self, final_answer: str) -> "JobResult":
-        return self.model_copy(
-            update={
-                "status": "done",
-                "final_answer": final_answer,
-                "completed_at": _now(),
-            }
-        )
+    def mark_done(self, final_answer: str, messages: list[dict[str, Any]] | None = None) -> "JobResult":
+        updates: dict[str, Any] = {
+            "status": "done",
+            "final_answer": final_answer,
+            "completed_at": _now(),
+        }
+        if messages is not None:
+            updates["messages"] = messages
+        return self.model_copy(update=updates)
 
     def mark_failed(self, error: str, retry_count: int) -> "JobResult":
         return self.model_copy(
